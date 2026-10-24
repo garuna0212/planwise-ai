@@ -10,6 +10,12 @@ import {
 const ACTIVE_PLAN_KEY = 'planwise_active_plan_v1';
 const SAVED_PLANS_KEY = 'planwise_saved_plans_list_v1';
 
+import {
+  generatePlanningAssumptions,
+  generateBudgetTradeOffs,
+  generateContextualRationale,
+} from './contextEngine.ts';
+
 /**
  * Creates a complete PlanWisePlan object using deterministic engine + initial insights
  */
@@ -30,6 +36,9 @@ export function createPlanObject(
   const warnings = generateContextAwareWarnings(input, budget.categories, overspendAnalysis);
   const timeline = generatePreparationTimeline(input.date, input.eventType, input.venuePreference);
   const vendors = generateInitialVendors(budget.categories, input.eventType);
+  const assumptions = generatePlanningAssumptions(input, budget.costPerGuestINR);
+  const tradeOffs = generateBudgetTradeOffs(input, budget.categories, budget.totalINR, budget.costPerGuestINR);
+  const contextualRationale = generateContextualRationale(input, budget);
 
   const defaultInsights = {
     tagline: `An unforgettable ${input.eventType} celebration in ${input.city}`,
@@ -93,7 +102,15 @@ export function createPlanObject(
       ],
     },
     citySpecificAdvice: `In ${input.city}, check venue local noise curfews (typically 10:00 PM for outdoor amplification) and factor in 45 minutes buffer for guest transit.`,
+    whyThisFitsContext: contextualRationale,
   };
+
+  const finalInsights = aiInsightsOverride
+    ? {
+        ...aiInsightsOverride,
+        whyThisFitsContext: aiInsightsOverride.whyThisFitsContext || contextualRationale,
+      }
+    : defaultInsights;
 
   return {
     id: `plan-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
@@ -104,7 +121,9 @@ export function createPlanObject(
     warnings,
     timeline,
     vendors,
-    aiInsights: aiInsightsOverride || defaultInsights,
+    aiInsights: finalInsights,
+    assumptions,
+    tradeOffs,
     chatHistory: [
       {
         id: 'msg-welcome',

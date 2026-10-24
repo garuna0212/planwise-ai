@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   X,
   Play,
@@ -23,7 +23,15 @@ import {
   identifyOverspending,
   recalculatePlan,
 } from '../utils/planningEngine.ts';
+import {
+  validatePlanApiRequest,
+  validateChatApiRequest,
+  validateAndSanitizeGeminiPlanResponse,
+  stripHtmlAndScripts,
+} from '../utils/securityValidators.ts';
+import { MemoryRateLimiterStore } from '../utils/rateLimiter.ts';
 import { PlanInput } from '../types/planwise.ts';
+import { useFocusTrap } from '../utils/useFocusTrap.ts';
 
 interface TestRunnerModalProps {
   isOpen: boolean;
@@ -45,6 +53,14 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
 }) => {
   const [results, setResults] = useState<TestResult[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const modalRef = useRef<HTMLDivElement>(null);
+  const runBtnRef = useRef<HTMLButtonElement>(null);
+
+  useFocusTrap(modalRef, {
+    isOpen,
+    onClose: isRunning ? undefined : onClose,
+    initialFocusRef: runBtnRef,
+  });
 
   React.useEffect(() => {
     if (isOpen) {
@@ -60,7 +76,7 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
 
   if (!isOpen) return null;
 
-  const runAllTests = () => {
+  const runAllTests = async () => {
     setIsRunning(true);
     const testList: TestResult[] = [];
 
@@ -258,6 +274,8 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
       vendors: [],
       aiInsights: {} as any,
       chatHistory: [],
+      assumptions: [],
+      tradeOffs: [],
     };
     const recalced = recalculatePlan(dummyPlan, { budgetINR: 200000, guestCount: 100 });
     const t10Passed = recalced.budget.totalINR === 200000 && recalced.budget.costPerGuestINR === 2000;
@@ -268,6 +286,125 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
       passed: t10Passed,
       message: 'Instantly recalculated total to ₹2,00,000 and cost/guest to ₹2,000.',
       durationMs: Number((performance.now() - t10Start).toFixed(2)),
+    });
+
+    // Test 11: Security - Server Runtime Request Validation & Prototype Guard
+    const t11Start = performance.now();
+    const maliciousPayload = {
+      input: {
+        title: 'Valid Wedding Title',
+        eventType: 'wedding',
+        date: '2026-11-20',
+        city: 'Mumbai',
+        budgetINR: 500000,
+        guestCount: 100,
+        theme: 'Floral',
+        venuePreference: 'indoor',
+        specialRequirements: '',
+      },
+      budget: { totalINR: 500000 },
+    };
+    const validPlanCheck = validatePlanApiRequest(maliciousPayload);
+    const pastPlanCheck = validatePlanApiRequest({
+      input: { ...maliciousPayload.input, date: '2020-01-01' },
+      budget: { totalINR: 500000 },
+    });
+    const lowBudgetCheck = validatePlanApiRequest({
+      input: { ...maliciousPayload.input, budgetINR: 200 },
+      budget: { totalINR: 200 },
+    });
+    const t11Passed =
+      validPlanCheck.isValid &&
+      !pastPlanCheck.isValid &&
+      !lowBudgetCheck.isValid;
+    testList.push({
+      id: 't-11',
+      suite: 'Security & Schema',
+      name: 'Strict Server-Side Request Validation & Boundary Armor',
+      passed: t11Passed,
+      message: 'Validated input schema, rejected past dates, and enforced minimum budget limits.',
+      durationMs: Number((performance.now() - t11Start).toFixed(2)),
+    });
+
+    // Test 12: Security - Chat Request & History Length Limits
+    const t12Start = performance.now();
+    const validChat = validateChatApiRequest({
+      message: 'Can I add live acoustic singing?',
+      history: [
+        { sender: 'user', text: 'Hello' },
+        { sender: 'assistant', text: 'Hi! Ready to assist.' },
+      ],
+    });
+    const emptyChat = validateChatApiRequest({ message: '   ' });
+    const hugeChat = validateChatApiRequest({ message: 'A'.repeat(1500) });
+    const t12Passed =
+      validChat.isValid &&
+      !emptyChat.isValid &&
+      !hugeChat.isValid;
+    testList.push({
+      id: 't-12',
+      suite: 'Security & Schema',
+      name: 'Chat Payload & Conversation History Length Bounding',
+      passed: t12Passed,
+      message: 'Bounded chat text to 1,000 characters and sanitized conversation history items.',
+      durationMs: Number((performance.now() - t12Start).toFixed(2)),
+    });
+
+    // Test 13: Security - Malformed AI Output Sanitization & XSS Neutralization
+    const t13Start = performance.now();
+    const mockFallback = {
+      tagline: 'Standard Tagline',
+      conceptNarrative: 'Standard Narrative',
+      curatedMenu: {
+        welcomeDrinks: ['Drink 1'],
+        appetizers: ['App 1'],
+        mains: ['Main 1'],
+        desserts: ['Dessert 1'],
+        culturalNotes: 'Notes',
+      },
+      decorAndAmbience: {
+        colorPalette: [{ name: 'Crimson', hex: '#BE123C' }],
+        stylingHighlights: ['Floral arch'],
+        diyCostSavingIdeas: ['DIY tips'],
+      },
+      entertainmentAndActivities: {
+        highlights: ['DJ'],
+        runOfShowTips: ['Toasts'],
+      },
+      citySpecificAdvice: 'Advice',
+    };
+    const xssAIOutput = {
+      tagline: 'Festive Party <script>alert(1)</script>',
+      conceptNarrative: 'Evening with <iframe src="evil.com"></iframe> and safe vibes.',
+    };
+    const sanitizedAI = validateAndSanitizeGeminiPlanResponse(xssAIOutput, mockFallback as any);
+    const t13Passed =
+      !sanitizedAI.tagline.includes('<script>') &&
+      !sanitizedAI.conceptNarrative.includes('<iframe') &&
+      sanitizedAI.curatedMenu.welcomeDrinks.length > 0;
+    testList.push({
+      id: 't-13',
+      suite: 'Security & Schema',
+      name: 'Safe AI Output Handling & Defensive XSS Stripping',
+      passed: t13Passed,
+      message: 'Neutralized malicious script tags and guaranteed non-crashing schema resilience.',
+      durationMs: Number((performance.now() - t13Start).toFixed(2)),
+    });
+
+    // Test 14: Rate Limiting & Distributed Store Sliding Window
+    const t14Start = performance.now();
+    const store = new MemoryRateLimiterStore();
+    const h1 = await store.increment('test:ip-1', 60000);
+    const h2 = await store.increment('test:ip-1', 60000);
+    const h3 = await store.increment('test:ip-2', 60000);
+    const t14Passed = h1.count === 1 && h2.count === 2 && h3.count === 1;
+    testList.push({
+      id: 't-14',
+      suite: 'Rate Limiter',
+      name: 'Sliding-Window IP Rate Limiter Store & Per-Client Isolation',
+      passed: t14Passed,
+      message: 'Tracks per-IP hit counts accurately and isolates multiple client streams.',
+      durationMs: Number((performance.now() - t14Start).toFixed(2)),
     });
 
     setResults(testList);
@@ -283,9 +420,12 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
       aria-labelledby="test-title"
       className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200"
     >
-      <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[88vh] flex flex-col overflow-hidden border border-slate-200">
+      <div
+        ref={modalRef}
+        className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[88vh] flex flex-col overflow-hidden border border-slate-200 dark:border-slate-800"
+      >
         {/* Header */}
-        <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between bg-slate-900 text-white">
+        <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-900 text-white">
           <div className="flex items-center gap-2.5">
             <div className="h-8 w-8 rounded-xl bg-emerald-500 text-slate-950 flex items-center justify-center font-bold">
               <Terminal className="w-4 h-4" />
@@ -302,7 +442,7 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
           <button
             onClick={onClose}
             aria-label="Close dialog"
-            className="p-1.5 text-slate-400 hover:text-white rounded-lg transition"
+            className="p-1.5 text-slate-400 hover:text-white rounded-lg transition focus-visible:ring-2 focus-visible:ring-emerald-400"
           >
             <X className="w-5 h-5" />
           </button>
@@ -311,13 +451,13 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
         {/* Content */}
         <div className="p-6 overflow-y-auto space-y-4 flex-1">
           <div className="flex items-center justify-between">
-            <div>
-              <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+            <div role="status" aria-live="polite" aria-atomic="true">
+              <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                 Test Execution Status
               </span>
-              <div className="text-sm font-semibold text-slate-800">
+              <div className="text-sm font-semibold text-slate-800 dark:text-slate-200">
                 {results.length > 0 ? (
-                  <span className="text-emerald-600 font-bold">
+                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">
                     {totalPassed} of {results.length} Tests Passing (100% Pass Rate)
                   </span>
                 ) : (
@@ -327,23 +467,24 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
             </div>
 
             <button
+              ref={runBtnRef}
               onClick={runAllTests}
               disabled={isRunning}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition"
+              className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-xs transition focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-emerald-500 cursor-pointer"
             >
               {isRunning ? (
-                <RefreshCw className="w-4 h-4 animate-spin" />
+                <RefreshCw className="w-4 h-4 animate-spin" aria-hidden="true" />
               ) : (
-                <Play className="w-4 h-4" />
+                <Play className="w-4 h-4" aria-hidden="true" />
               )}
               <span>{results.length > 0 ? 'Re-run Tests' : 'Execute Test Suite'}</span>
             </button>
           </div>
 
           {results.length === 0 ? (
-            <div className="text-center py-10 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
-              <ShieldCheck className="w-10 h-10 text-slate-400 mx-auto mb-2" />
-              <p className="text-xs text-slate-600 max-w-sm mx-auto">
+            <div className="text-center py-10 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-dashed border-slate-300 dark:border-slate-700">
+              <ShieldCheck className="w-10 h-10 text-slate-400 dark:text-slate-500 mx-auto mb-2" />
+              <p className="text-xs text-slate-600 dark:text-slate-400 max-w-sm mx-auto">
                 Click <strong>"Execute Test Suite"</strong> above to run deterministic unit assertions covering exact 100% budget distribution, zero-loss rupee allocations, date validation, and rule warnings.
               </p>
             </div>
@@ -354,29 +495,29 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
                   key={res.id}
                   className={`p-3.5 rounded-xl border flex items-start justify-between gap-3 text-xs ${
                     res.passed
-                      ? 'bg-emerald-50/60 border-emerald-200 text-emerald-950'
-                      : 'bg-rose-50 border-rose-200 text-rose-950'
+                      ? 'bg-emerald-50/60 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/60 text-emerald-950 dark:text-emerald-200'
+                      : 'bg-rose-50 dark:bg-rose-950/20 border-rose-200 dark:border-rose-900/60 text-rose-950 dark:text-rose-200'
                   }`}
                 >
                   <div className="flex items-start gap-2.5">
                     {res.passed ? (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
                     ) : (
-                      <XCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                      <XCircle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
                     )}
                     <div>
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-slate-900">{res.name}</span>
-                        <span className="text-[10px] font-semibold text-slate-500 uppercase px-1.5 py-0.2 bg-white rounded border border-slate-200">
+                        <span className="font-bold text-slate-900 dark:text-slate-100">{res.name}</span>
+                        <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase px-1.5 py-0.2 bg-white dark:bg-slate-800 rounded border border-slate-200 dark:border-slate-700">
                           {res.suite}
                         </span>
                       </div>
-                      <p className="text-slate-600 mt-0.5 leading-relaxed">
+                      <p className="text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
                         {res.message}
                       </p>
                     </div>
                   </div>
-                  <span className="font-mono text-[11px] text-slate-400 shrink-0">
+                  <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500 shrink-0 tabular-nums">
                     {res.durationMs}ms
                   </span>
                 </div>
@@ -386,11 +527,11 @@ export const TestRunnerModal: React.FC<TestRunnerModalProps> = ({
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between text-xs text-slate-500">
+        <div className="px-6 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
           <span>Automated mathematical parity & deterministic constraint verification</span>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 font-semibold text-slate-700 hover:text-slate-900 rounded-lg hover:bg-slate-200 transition"
+            className="px-4 py-1.5 font-semibold text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-slate-100 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800 transition"
           >
             Close
           </button>

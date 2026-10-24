@@ -11,12 +11,13 @@ import {
   CheckSquare,
   Building,
   AlertTriangle,
-  MessageSquare,
-  Share2,
-  Trash2,
-  Copy,
+  RotateCcw,
+  Sliders,
+  Check,
 } from 'lucide-react';
-import { Navbar } from './components/Navbar.tsx';
+import { Sidebar, ActiveTab } from './components/Sidebar.tsx';
+import { Header } from './components/Header.tsx';
+import { DashboardKPIs } from './components/DashboardKPIs.tsx';
 import { BudgetDashboard } from './components/BudgetDashboard.tsx';
 import { WarningsBanner } from './components/WarningsBanner.tsx';
 import { TimelineTracker } from './components/TimelineTracker.tsx';
@@ -34,9 +35,7 @@ import {
   createPlanObject,
 } from './utils/storage.ts';
 import { recalculatePlan } from './utils/planningEngine.ts';
-import { formatINR, formatCompactINR, formatDate, getDaysUntil } from './utils/formatters.ts';
-
-type ActiveTab = 'budget' | 'creative' | 'timeline' | 'vendors' | 'warnings';
+import { formatINR, formatDate, getDaysUntil } from './utils/formatters.ts';
 
 export const App: React.FC = () => {
   const [currentPlan, setCurrentPlan] = useState<PlanWisePlan>(loadActivePlan);
@@ -47,8 +46,37 @@ export const App: React.FC = () => {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [showQuickTuning, setShowQuickTuning] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [announcement, setAnnouncement] = useState('');
 
-  // Sync to localStorage
+  // Theme Management
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const savedTheme = localStorage.getItem('planwise_theme');
+      if (savedTheme) {
+        return savedTheme === 'dark';
+      }
+      return window.matchMedia('(prefers-color-scheme: dark)').matches;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('planwise_theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('planwise_theme', 'light');
+    }
+  }, [isDarkMode]);
+
+  const toggleTheme = () => {
+    setIsDarkMode((prev) => !prev);
+    setAnnouncement(`Switched to ${!isDarkMode ? 'dark' : 'light'} theme`);
+  };
+
+  // Sync current plan to localStorage
   useEffect(() => {
     saveActivePlan(currentPlan);
     setSavedPlans(getSavedPlansList());
@@ -60,13 +88,15 @@ export const App: React.FC = () => {
 
   const handleSelectPlan = (plan: PlanWisePlan) => {
     setCurrentPlan(plan);
+    setAnnouncement(`Switched active event to ${plan.input.title}`);
   };
 
-  // Immediate deterministic recalculation when any input changes
+  // Immediate deterministic recalculation when any tuning parameter changes
   const handleInlineParamChange = (field: string, value: any) => {
     const patch = { [field]: value };
     const updated = recalculatePlan(currentPlan, patch);
     setCurrentPlan(updated);
+    setAnnouncement(`Updated ${field}. Total budget is ${formatINR(updated.budget.totalINR)}.`);
   };
 
   const handleCreateNewPlan = async (input: PlanInput, useGeminiAI: boolean) => {
@@ -75,7 +105,6 @@ export const App: React.FC = () => {
       let aiInsightsOverride = null;
 
       if (useGeminiAI) {
-        // Call backend server endpoint
         try {
           const res = await fetch('/api/gemini/plan', {
             method: 'POST',
@@ -102,13 +131,17 @@ export const App: React.FC = () => {
       const newPlan = createPlanObject(input, undefined, aiInsightsOverride);
       setCurrentPlan(newPlan);
       setIsCreateModalOpen(false);
+      setAnnouncement(`Created new celebration plan: ${newPlan.input.title}`);
 
-      // Trigger celebratory confetti
-      confetti({
-        particleCount: 80,
-        spread: 70,
-        origin: { y: 0.6 },
-      });
+      // Check prefers-reduced-motion before firing confetti
+      const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (!prefersReducedMotion) {
+        confetti({
+          particleCount: 80,
+          spread: 70,
+          origin: { y: 0.6 },
+        });
+      }
     } catch (e) {
       console.error('Error creating plan:', e);
     } finally {
@@ -116,110 +149,126 @@ export const App: React.FC = () => {
     }
   };
 
-  const daysUntil = getDaysUntil(currentPlan.input.date);
+  const getTabTitle = (tab: ActiveTab) => {
+    switch (tab) {
+      case 'budget':
+        return {
+          title: 'Budget Allocation',
+          subtitle: 'Deterministic 100% distribution with category sliders and zero rounding error',
+        };
+      case 'creative':
+        return {
+          title: 'Creative Direction & Menu',
+          subtitle: 'AI synthesized theme narrative, color palette swatches, and multi-course culinary plan',
+        };
+      case 'timeline':
+        return {
+          title: 'Preparation Timeline',
+          subtitle: 'Countdown milestones structured backward from celebration day',
+        };
+      case 'vendors':
+        return {
+          title: 'Vendor Checklist',
+          subtitle: 'Live vendor quotes, booking pipeline, and payment tracking',
+        };
+      case 'warnings':
+        return {
+          title: 'Planning Advisory & Feasibility',
+          subtitle: 'Continuous audit of budget-to-guest ratio, monsoon weather, and vendor lead times',
+        };
+    }
+  };
+
+  const currentTabMeta = getTabTitle(activeTab);
   const warningCount = currentPlan.warnings.length;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans">
-      {/* Navbar */}
-      <Navbar
+    <div className="min-h-screen bg-[#F8FAFC] dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans transition-colors duration-150">
+      {/* Screen Reader Live Announcement Region */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </div>
+
+      {/* Sidebar Navigation (Desktop fixed + Mobile sliding drawer) */}
+      <Sidebar
         currentPlan={currentPlan}
         savedPlans={savedPlans}
+        activeTab={activeTab}
+        onSelectTab={(tab) => {
+          setActiveTab(tab);
+          setAnnouncement(`Switched to tab ${getTabTitle(tab).title}`);
+        }}
         onSelectPlan={handleSelectPlan}
         onOpenCreateModal={() => setIsCreateModalOpen(true)}
-        onExportJSON={() => exportPlanAsJSON(currentPlan)}
         onOpenTestModal={() => setIsTestModalOpen(true)}
+        isDarkMode={isDarkMode}
+        onToggleTheme={toggleTheme}
+        isMobileOpen={isMobileMenuOpen}
+        onCloseMobile={() => setIsMobileMenuOpen(false)}
+        warningCount={warningCount}
       />
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
-        {/* Event Hero Header */}
-        <div className="bg-white p-6 sm:p-7 rounded-3xl border border-slate-200/80 shadow-xs relative overflow-hidden">
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-            <div className="space-y-2 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-200/80">
-                  {currentPlan.input.eventType}
-                </span>
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider bg-slate-100 text-slate-700">
-                  {currentPlan.input.venuePreference}
-                </span>
-                <span
-                  className={`px-2.5 py-0.5 rounded-full text-xs font-bold ${
-                    daysUntil < 7
-                      ? 'bg-rose-100 text-rose-800'
-                      : 'bg-emerald-100 text-emerald-800'
-                  }`}
-                >
-                  {daysUntil < 0
-                    ? 'Past Event'
-                    : daysUntil === 0
-                    ? 'Celebration Day Today!'
-                    : `${daysUntil} Days Remaining`}
-                </span>
-              </div>
+      {/* Main Content Area (Offset by Sidebar on Large Screens) */}
+      <div className="lg:pl-64 flex flex-col flex-1 min-w-0">
+        {/* Top Header */}
+        <Header
+          pageTitle={currentTabMeta.title}
+          pageSubtitle={currentTabMeta.subtitle}
+          currentPlan={currentPlan}
+          onToggleMobileMenu={() => setIsMobileMenuOpen(true)}
+          showQuickTuning={showQuickTuning}
+          onToggleQuickTuning={() => {
+            const next = !showQuickTuning;
+            setShowQuickTuning(next);
+            setAnnouncement(next ? 'Instant tuning panel opened' : 'Instant tuning panel closed');
+          }}
+          onOpenAIChat={() => setIsChatOpen(true)}
+          onExportJSON={() => {
+            exportPlanAsJSON(currentPlan);
+            setAnnouncement('Exported celebration plan as JSON');
+          }}
+        />
 
-              <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
-                {currentPlan.input.title}
-              </h1>
-
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs sm:text-sm text-slate-600">
-                <div className="flex items-center gap-1.5">
-                  <Calendar className="w-4 h-4 text-slate-400" />
-                  <span>{formatDate(currentPlan.input.date)}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <MapPin className="w-4 h-4 text-slate-400" />
-                  <span>{currentPlan.input.city}</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Users className="w-4 h-4 text-slate-400" />
-                  <span>{currentPlan.input.guestCount} Guests</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <IndianRupee className="w-4 h-4 text-slate-400" />
-                  <span className="font-bold text-slate-800">
-                    {formatINR(currentPlan.input.budgetINR)}
+        {/* Main Workspace Body */}
+        <main id="main-content" className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-6 space-y-6">
+          {/* Quick Context Tuning Panel with accessible label associations */}
+          {showQuickTuning && (
+            <section
+              aria-label="Instant Parameter Tuning Panel"
+              className="bg-white dark:bg-slate-900 p-4 sm:p-5 rounded-2xl border border-[#6D5EF8]/30 dark:border-[#6D5EF8]/40 shadow-sm animate-in fade-in slide-in-from-top-2 duration-150"
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-[#6D5EF8]" aria-hidden="true" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-800 dark:text-slate-200">
+                    Instant Parameter Tuning
+                  </span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    (Recalculates budget, timelines, and advisories immediately)
                   </span>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => setShowQuickTuning(false)}
+                  className="text-xs text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 focus-visible:ring-2 focus-visible:ring-[#6D5EF8] rounded-md px-1.5 py-0.5"
+                >
+                  Close
+                </button>
               </div>
-            </div>
 
-            {/* Quick Action Buttons */}
-            <div className="flex flex-wrap items-center gap-2 self-start lg:self-auto">
-              <button
-                onClick={() => setShowQuickTuning(!showQuickTuning)}
-                className={`inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs sm:text-sm font-semibold border transition ${
-                  showQuickTuning
-                    ? 'bg-indigo-50 border-indigo-300 text-indigo-900'
-                    : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
-                }`}
-              >
-                <span>⚡ Instant Recalculation Tuning</span>
-              </button>
-
-              <button
-                onClick={() => setIsChatOpen(true)}
-                className="inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl text-xs sm:text-sm font-bold shadow-md shadow-indigo-200 hover:opacity-95 transition"
-              >
-                <Sparkles className="w-4 h-4" />
-                <span>Ask AI Planner</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Quick Context Tuning Panel (Immediately recalculates on change) */}
-          {showQuickTuning && (
-            <div className="mt-5 pt-4 border-t border-slate-200 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 bg-slate-50/80 p-4 rounded-2xl animate-in fade-in duration-150">
-              {/* Budget input with quick increments */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
-                  Total Budget (INR)
-                </label>
-                <div className="flex items-center gap-1">
-                  <div className="relative flex-1">
-                    <span className="absolute left-2.5 top-1.5 text-slate-400 text-xs font-bold">₹</span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+                {/* Budget */}
+                <div>
+                  <label
+                    htmlFor="tuning-budget"
+                    className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1"
+                  >
+                    Total Budget (INR)
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-2.5 top-1.5 text-slate-400 text-xs font-bold" aria-hidden="true">₹</span>
                     <input
+                      id="tuning-budget"
                       type="number"
                       min="1000"
                       step="10000"
@@ -227,225 +276,258 @@ export const App: React.FC = () => {
                       onChange={(e) =>
                         handleInlineParamChange('budgetINR', Number(e.target.value))
                       }
-                      className="w-full pl-6 pr-2 py-1 text-xs font-mono font-bold rounded-lg border border-slate-300 bg-white"
+                      className="w-full pl-6 pr-2 py-1.5 text-xs font-mono font-bold rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus-visible:ring-2 focus-visible:ring-[#6D5EF8]"
                     />
                   </div>
                 </div>
+
+                {/* Guest Count */}
+                <div>
+                  <label
+                    htmlFor="tuning-guests"
+                    className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1"
+                  >
+                    Guest Count
+                  </label>
+                  <input
+                    id="tuning-guests"
+                    type="number"
+                    min="1"
+                    max="25000"
+                    value={currentPlan.input.guestCount}
+                    onChange={(e) =>
+                      handleInlineParamChange('guestCount', Number(e.target.value))
+                    }
+                    className="w-full px-2.5 py-1.5 text-xs font-bold rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus-visible:ring-2 focus-visible:ring-[#6D5EF8]"
+                  />
+                </div>
+
+                {/* Event Type */}
+                <div>
+                  <label
+                    htmlFor="tuning-event-type"
+                    className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1"
+                  >
+                    Event Type
+                  </label>
+                  <select
+                    id="tuning-event-type"
+                    value={currentPlan.input.eventType}
+                    onChange={(e) =>
+                      handleInlineParamChange('eventType', e.target.value)
+                    }
+                    className="w-full px-2 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus-visible:ring-2 focus-visible:ring-[#6D5EF8]"
+                  >
+                    <option value="wedding">Wedding</option>
+                    <option value="birthday">Birthday</option>
+                    <option value="community">Community</option>
+                    <option value="anniversary">Anniversary</option>
+                    <option value="corporate">Corporate</option>
+                    <option value="festival">Festival</option>
+                  </select>
+                </div>
+
+                {/* Venue Setting */}
+                <div>
+                  <label
+                    htmlFor="tuning-venue-preference"
+                    className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1"
+                  >
+                    Venue Setting
+                  </label>
+                  <select
+                    id="tuning-venue-preference"
+                    value={currentPlan.input.venuePreference}
+                    onChange={(e) =>
+                      handleInlineParamChange('venuePreference', e.target.value)
+                    }
+                    className="w-full px-2 py-1.5 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus-visible:ring-2 focus-visible:ring-[#6D5EF8]"
+                  >
+                    <option value="indoor">Indoor</option>
+                    <option value="outdoor">Outdoor</option>
+                    <option value="hybrid">Hybrid</option>
+                  </select>
+                </div>
+
+                {/* Event Date */}
+                <div>
+                  <label
+                    htmlFor="tuning-event-date"
+                    className="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1"
+                  >
+                    Event Date
+                  </label>
+                  <input
+                    id="tuning-event-date"
+                    type="date"
+                    value={currentPlan.input.date}
+                    onChange={(e) =>
+                      handleInlineParamChange('date', e.target.value)
+                    }
+                    className="w-full px-2 py-1.5 text-xs font-medium rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus-visible:ring-2 focus-visible:ring-[#6D5EF8]"
+                  />
+                </div>
               </div>
+            </section>
+          )}
 
-              {/* Guest Count input */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
-                  Guest Count
-                </label>
-                <input
-                  type="number"
-                  min="0"
-                  max="25000"
-                  value={currentPlan.input.guestCount}
-                  onChange={(e) =>
-                    handleInlineParamChange('guestCount', Number(e.target.value))
-                  }
-                  className="w-full px-2.5 py-1 text-xs font-bold rounded-lg border border-slate-300 bg-white"
-                />
+          {/* 4 Dashboard Summary KPI Cards */}
+          <DashboardKPIs
+            plan={currentPlan}
+            onNavigateToTab={(tab) => {
+              setActiveTab(tab);
+              setAnnouncement(`Navigated to ${getTabTitle(tab).title}`);
+            }}
+          />
+
+          {/* Warnings Banner (Always visible if active advisories exist) */}
+          <WarningsBanner warnings={currentPlan.warnings} />
+
+          {/* Active Tab Workspace Display with semantic role="tabpanel" */}
+          <div
+            role="tabpanel"
+            id={`tabpanel-${activeTab}`}
+            aria-labelledby={`tab-${activeTab}`}
+            tabIndex={0}
+            className="pt-1 outline-hidden"
+          >
+            {activeTab === 'budget' && (
+              <BudgetDashboard
+                plan={currentPlan}
+                onUpdatePlan={handleUpdatePlan}
+              />
+            )}
+
+            {activeTab === 'creative' && (
+              <AICreativeSuite plan={currentPlan} />
+            )}
+
+            {activeTab === 'timeline' && (
+              <TimelineTracker
+                plan={currentPlan}
+                onUpdatePlan={handleUpdatePlan}
+              />
+            )}
+
+            {activeTab === 'vendors' && (
+              <VendorChecklist
+                plan={currentPlan}
+                onUpdatePlan={handleUpdatePlan}
+              />
+            )}
+
+            {activeTab === 'warnings' && (
+              <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-4">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 flex items-center justify-center">
+                    <AlertTriangle className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                      Complete Planning & Feasibility Analysis
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Continuous real-time verification of budget feasibility, city monsoon alerts, and vendor lead times.
+                    </p>
+                  </div>
+                </div>
+                <WarningsBanner warnings={currentPlan.warnings} />
               </div>
+            )}
+          </div>
+        </main>
+      </div>
 
-              {/* Event Type */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
-                  Event Type
-                </label>
-                <select
-                  value={currentPlan.input.eventType}
-                  onChange={(e) =>
-                    handleInlineParamChange('eventType', e.target.value)
-                  }
-                  className="w-full px-2 py-1 text-xs font-semibold rounded-lg border border-slate-300 bg-white text-slate-800"
-                >
-                  <option value="wedding">Wedding</option>
-                  <option value="birthday">Birthday</option>
-                  <option value="community">Community</option>
-                  <option value="anniversary">Anniversary</option>
-                  <option value="corporate">Corporate</option>
-                  <option value="festival">Festival</option>
-                </select>
-              </div>
-
-              {/* Venue Preference */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
-                  Venue Setting
-                </label>
-                <select
-                  value={currentPlan.input.venuePreference}
-                  onChange={(e) =>
-                    handleInlineParamChange('venuePreference', e.target.value)
-                  }
-                  className="w-full px-2 py-1 text-xs font-semibold rounded-lg border border-slate-300 bg-white text-slate-800"
-                >
-                  <option value="indoor">Indoor</option>
-                  <option value="outdoor">Outdoor</option>
-                  <option value="hybrid">Hybrid</option>
-                </select>
-              </div>
-
-              {/* Event Date */}
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 uppercase mb-1">
-                  Event Date
-                </label>
-                <input
-                  type="date"
-                  value={currentPlan.input.date}
-                  onChange={(e) =>
-                    handleInlineParamChange('date', e.target.value)
-                  }
-                  className="w-full px-2 py-1 text-xs rounded-lg border border-slate-300 bg-white text-slate-800"
-                />
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Warnings Banner on top of all views */}
-        <WarningsBanner warnings={currentPlan.warnings} />
-
-        {/* Navigation Tabs */}
-        <div className="border-b border-slate-200 no-print">
-          <nav className="flex space-x-2 sm:space-x-6 overflow-x-auto scrollbar-none py-1">
-            <button
-              onClick={() => setActiveTab('budget')}
-              className={`py-2.5 px-3 text-xs sm:text-sm font-bold flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
-                activeTab === 'budget'
-                  ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <PieChart className="w-4 h-4" />
-              <span>Budget Allocation</span>
-              <span className="text-xs px-1.5 py-0.2 bg-slate-100 rounded-md font-mono text-slate-600">
-                100%
-              </span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('creative')}
-              className={`py-2.5 px-3 text-xs sm:text-sm font-bold flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
-                activeTab === 'creative'
-                  ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Palette className="w-4 h-4" />
-              <span>Creative Suite & Menu</span>
-              <span className="text-[10px] px-1.5 py-0.2 bg-indigo-50 text-indigo-700 rounded-md font-bold uppercase">
-                AI
-              </span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('timeline')}
-              className={`py-2.5 px-3 text-xs sm:text-sm font-bold flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
-                activeTab === 'timeline'
-                  ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Calendar className="w-4 h-4" />
-              <span>Timeline & Countdown</span>
-              <span className="text-xs px-1.5 py-0.2 bg-slate-100 rounded-md font-mono text-slate-600">
-                {daysUntil}d
-              </span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('vendors')}
-              className={`py-2.5 px-3 text-xs sm:text-sm font-bold flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
-                activeTab === 'vendors'
-                  ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <Building className="w-4 h-4" />
-              <span>Vendor Checklist</span>
-              <span className="text-xs px-1.5 py-0.2 bg-slate-100 rounded-md font-mono text-slate-600">
-                {currentPlan.vendors.filter((v) => v.status === 'booked').length}/
-                {currentPlan.vendors.length}
-              </span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('warnings')}
-              className={`py-2.5 px-3 text-xs sm:text-sm font-bold flex items-center gap-2 border-b-2 transition whitespace-nowrap ${
-                activeTab === 'warnings'
-                  ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              <AlertTriangle className="w-4 h-4" />
-              <span>Planning Advisory</span>
-              {warningCount > 0 && (
-                <span className="text-xs px-1.5 py-0.2 bg-amber-100 text-amber-800 rounded-full font-bold">
-                  {warningCount}
-                </span>
-              )}
-            </button>
-          </nav>
-        </div>
-
-        {/* Tab Content Display */}
-        <div className="pt-2">
-          {activeTab === 'budget' && (
-            <BudgetDashboard
-              plan={currentPlan}
-              onUpdatePlan={handleUpdatePlan}
-            />
-          )}
-
-          {activeTab === 'creative' && (
-            <AICreativeSuite plan={currentPlan} />
-          )}
-
-          {activeTab === 'timeline' && (
-            <TimelineTracker
-              plan={currentPlan}
-              onUpdatePlan={handleUpdatePlan}
-            />
-          )}
-
-          {activeTab === 'vendors' && (
-            <VendorChecklist
-              plan={currentPlan}
-              onUpdatePlan={handleUpdatePlan}
-            />
-          )}
-
-          {activeTab === 'warnings' && (
-            <div className="bg-white p-6 rounded-2xl border border-slate-200/80 shadow-xs space-y-4">
-              <h3 className="text-base font-bold text-slate-900">
-                Complete Planning & Feasibility Analysis
-              </h3>
-              <p className="text-xs text-slate-500">
-                PlanWise AI constantly computes feasibility metrics including guest-to-budget ratios, monsoon rainfall risks, and vendor lead-times.
-              </p>
-              <WarningsBanner warnings={currentPlan.warnings} />
-            </div>
-          )}
-        </div>
-      </main>
-
-      {/* Floating AI Assistant Trigger */}
+      {/* Floating AI Assistant Trigger (Bottom right on all viewports) */}
       <div className="fixed bottom-6 right-6 z-30 no-print">
         <button
           onClick={() => setIsChatOpen(true)}
-          className="group flex items-center gap-2.5 px-4 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white rounded-full shadow-xl shadow-indigo-300 hover:scale-105 active:scale-95 transition"
+          aria-label="Open PlanWise AI Assistant"
+          className="group flex items-center gap-2.5 px-4 py-3 bg-[#6D5EF8] hover:bg-[#5B4CE6] text-white rounded-full shadow-lg shadow-[#6D5EF8]/30 hover:scale-105 active:scale-95 transition cursor-pointer focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#6D5EF8]"
         >
-          <Sparkles className="w-5 h-5 animate-pulse" />
-          <span className="font-bold text-sm hidden sm:inline">Ask AI Planner</span>
+          <Sparkles className="w-4 h-4" />
+          <span className="font-semibold text-sm hidden sm:inline">Ask AI Planner</span>
         </button>
       </div>
 
-      {/* Modals & Drawers */}
+      {/* Mobile Bottom Navigation Bar (Visible on mobile viewports) */}
+      <nav
+        role="tablist"
+        aria-label="Mobile Bottom Navigation"
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-20 bg-white/95 dark:bg-slate-900/95 backdrop-blur border-t border-slate-200/80 dark:border-slate-800 px-2 py-1 flex items-center justify-around no-print"
+      >
+        <button
+          role="tab"
+          aria-selected={activeTab === 'budget'}
+          aria-label="Budget Allocation Tab"
+          onClick={() => setActiveTab('budget')}
+          className={`flex flex-col items-center py-1 px-2 text-[10px] font-semibold transition focus-visible:ring-2 focus-visible:ring-[#6D5EF8] ${
+            activeTab === 'budget'
+              ? 'text-[#6D5EF8] dark:text-[#9B8FF9]'
+              : 'text-slate-500 dark:text-slate-400'
+          }`}
+        >
+          <PieChart className="w-4 h-4 mb-0.5" aria-hidden="true" />
+          <span>Budget</span>
+        </button>
+
+        <button
+          role="tab"
+          aria-selected={activeTab === 'creative'}
+          aria-label="Creative Suite Tab"
+          onClick={() => setActiveTab('creative')}
+          className={`flex flex-col items-center py-1 px-2 text-[10px] font-semibold transition focus-visible:ring-2 focus-visible:ring-[#6D5EF8] ${
+            activeTab === 'creative'
+              ? 'text-[#6D5EF8] dark:text-[#9B8FF9]'
+              : 'text-slate-500 dark:text-slate-400'
+          }`}
+        >
+          <Palette className="w-4 h-4 mb-0.5" aria-hidden="true" />
+          <span>Creative</span>
+        </button>
+
+        <button
+          role="tab"
+          aria-selected={activeTab === 'timeline'}
+          aria-label="Preparation Timeline Tab"
+          onClick={() => setActiveTab('timeline')}
+          className={`flex flex-col items-center py-1 px-2 text-[10px] font-semibold transition focus-visible:ring-2 focus-visible:ring-[#6D5EF8] ${
+            activeTab === 'timeline'
+              ? 'text-[#6D5EF8] dark:text-[#9B8FF9]'
+              : 'text-slate-500 dark:text-slate-400'
+          }`}
+        >
+          <Calendar className="w-4 h-4 mb-0.5" aria-hidden="true" />
+          <span>Timeline</span>
+        </button>
+
+        <button
+          role="tab"
+          aria-selected={activeTab === 'vendors'}
+          aria-label="Vendor Checklist Tab"
+          onClick={() => setActiveTab('vendors')}
+          className={`flex flex-col items-center py-1 px-2 text-[10px] font-semibold transition focus-visible:ring-2 focus-visible:ring-[#6D5EF8] ${
+            activeTab === 'vendors'
+              ? 'text-[#6D5EF8] dark:text-[#9B8FF9]'
+              : 'text-slate-500 dark:text-slate-400'
+          }`}
+        >
+          <Building className="w-4 h-4 mb-0.5" aria-hidden="true" />
+          <span>Vendors</span>
+        </button>
+
+        <button
+          type="button"
+          aria-label="Open PlanWise AI Assistant Chat"
+          onClick={() => setIsChatOpen(true)}
+          className="flex flex-col items-center py-1 px-2 text-[10px] font-semibold text-[#6D5EF8] dark:text-[#9B8FF9] focus-visible:ring-2 focus-visible:ring-[#6D5EF8]"
+        >
+          <Sparkles className="w-4 h-4 mb-0.5" aria-hidden="true" />
+          <span>AI Chat</span>
+        </button>
+      </nav>
+
+      {/* Modals & AI Assistant Drawer */}
       <EventCreationModal
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}

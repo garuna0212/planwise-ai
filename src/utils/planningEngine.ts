@@ -15,6 +15,12 @@ import {
 } from './budgetEngine.ts';
 import { getDaysUntil, formatDate, formatINR } from './formatters.ts';
 import { generatePreparationTimeline } from './timelineEngine.ts';
+import {
+  generatePlanningAssumptions,
+  generateBudgetTradeOffs,
+  generateContextualRationale,
+} from './contextEngine.ts';
+
 
 export interface PerGuestBudgetResult {
   costPerGuestINR: number;
@@ -549,6 +555,16 @@ export function recalculatePlan(
       ? generatePreparationTimeline(updatedInput.date, updatedInput.eventType, updatedInput.venuePreference)
       : existingPlan.timeline;
 
+  const assumptions = generatePlanningAssumptions(updatedInput, budget.costPerGuestINR);
+  const tradeOffs = generateBudgetTradeOffs(updatedInput, budget.categories, budget.totalINR, budget.costPerGuestINR);
+  const contextualRationale = generateContextualRationale(updatedInput, budget);
+
+  const updatedInsights = {
+    ...existingPlan.aiInsights,
+    whyThisFitsContext: contextualRationale,
+  };
+
+
   return {
     ...existingPlan,
     updatedAt: new Date().toISOString(),
@@ -556,5 +572,9 @@ export function recalculatePlan(
     budget,
     warnings,
     timeline,
+    aiInsights: updatedInsights,
+    assumptions,
+    tradeOffs,
   };
 }
+

@@ -100,6 +100,28 @@ export interface VendorItem {
   notes: string;
 }
 
+export interface BudgetTradeOff {
+  id: string;
+  area: string;
+  tradeOff: string;
+  impact: string;
+  potentialSavingsINR: number;
+  actionType: 'reduce_guests' | 'shift_catering' | 'diy_decor' | 'off_peak' | 'rebalance_entertainment';
+}
+
+export interface PlanRevisionProposal {
+  id: string;
+  title: string;
+  rationale: string;
+  changesSummary: string[];
+  suggestedBudgetWeights?: Partial<Record<BudgetCategory, number>>;
+  suggestedGuestCount?: number;
+  suggestedTotalBudgetINR?: number;
+  themeAdjustment?: string;
+  specialNote?: string;
+  applied: boolean;
+}
+
 export interface GeminiCreativeInsights {
   conceptNarrative: string;
   tagline: string;
@@ -120,6 +142,12 @@ export interface GeminiCreativeInsights {
     runOfShowTips: string[];
   };
   citySpecificAdvice: string;
+  whyThisFitsContext?: {
+    eventTypeRationale: string;
+    cityAndSeasonRationale: string;
+    guestScaleRationale: string;
+    budgetEfficiencyRationale: string;
+  };
 }
 
 export interface ChatMessage {
@@ -132,6 +160,7 @@ export interface ChatMessage {
     payload?: any;
     label: string;
   };
+  revisionProposal?: PlanRevisionProposal;
 }
 
 export interface PlanWisePlan {
@@ -155,4 +184,7 @@ export interface PlanWisePlan {
   vendors: VendorItem[];
   aiInsights: GeminiCreativeInsights;
   chatHistory: ChatMessage[];
+  assumptions: string[];
+  tradeOffs: BudgetTradeOff[];
 }
+

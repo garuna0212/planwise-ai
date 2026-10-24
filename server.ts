@@ -1,8 +1,15 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
+import { createRateLimiter } from './src/utils/rateLimiter.ts';
+import {
+  validatePlanApiRequest,
+  validateChatApiRequest,
+  validateAndSanitizeGeminiPlanResponse,
+} from './src/utils/securityValidators.ts';
+import { GeminiCreativeInsights } from './src/types/planwise.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,7 +17,52 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json({ limit: '10mb' }));
+// Security: Enforce tight 100KB request body limit to prevent memory/CPU exhaustion DoS
+app.use(express.json({ limit: '100kb' }));
+
+// Security: JSON parsing & payload-too-large error handling middleware
+app.use((err: any, req: Request, res: Response, next: NextFunction): void => {
+  if (err?.type === 'entity.too.large') {
+    res.status(413).json({
+      error: 'Payload too large. Maximum allowed request size is 100KB.',
+      status: 413,
+    });
+    return;
+  }
+  if (err instanceof SyntaxError && 'body' in err) {
+    res.status(400).json({
+      error: 'Malformed JSON payload.',
+      status: 400,
+    });
+    return;
+  }
+  next(err);
+});
+
+// Security Headers middleware
+app.use((req: Request, res: Response, next: NextFunction) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
+
+// Rate limiters (protects server resources from abusive traffic)
+// Architectural Note: Automatically hooks into Redis/Memorystore if REDIS_URL is provided,
+// falling back to high-performance sliding-window in-memory store for single-instance or dev runtimes.
+const planRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000, // 1 minute
+  maxRequests: 15,
+  keyPrefix: 'rl:plan:',
+  message: 'Plan generation rate limit reached (max 15 per minute). Please wait a moment.',
+});
+
+const chatRateLimiter = createRateLimiter({
+  windowMs: 60 * 1000, // 1 minute
+  maxRequests: 40,
+  keyPrefix: 'rl:chat:',
+  message: 'AI chat rate limit reached (max 40 per minute). Please slow down.',
+});
 
 // Lazy initialize Gemini client safely
 function getGeminiClient(): GoogleGenAI | null {
@@ -28,21 +80,22 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
-// Health check
+// Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
     geminiConfigured: Boolean(process.env.GEMINI_API_KEY),
+    rateLimiterBackend: process.env.REDIS_URL || process.env.MEMORYSTORE_HOST ? 'distributed-redis' : 'sliding-memory',
   });
 });
 
 // Deterministic fallback generator for when Gemini API key is missing or offline
-function generateFallbackCreativeInsights(input: any, budget: any) {
-  const city = input.city || 'your city';
-  const eventType = input.eventType || 'celebration';
-  const theme = input.theme || 'Elegant Celebration';
-  const guestCount = input.guestCount || 100;
+function generateFallbackCreativeInsights(input: any, budget: any): GeminiCreativeInsights {
+  const city = input?.city || 'your city';
+  const eventType = input?.eventType || 'celebration';
+  const theme = input?.theme || 'Elegant Celebration';
+  const guestCount = input?.guestCount || 100;
 
   return {
     tagline: `A captivating ${eventType} steeped in ${theme} in the heart of ${city}`,
@@ -109,97 +162,144 @@ function generateFallbackCreativeInsights(input: any, budget: any) {
   };
 }
 
-// POST /api/gemini/plan
-app.post('/api/gemini/plan', async (req, res) => {
+// POST /api/gemini/plan with runtime validation, rate limiting, and output schema enforcement
+app.post('/api/gemini/plan', planRateLimiter, async (req: Request, res: Response): Promise<void> => {
+  // 1. Strict runtime request validation
+  const validation = validatePlanApiRequest(req.body);
+  if (!validation.isValid) {
+    res.status(400).json({
+      error: 'Invalid celebration planning request payload.',
+      details: validation.errors,
+      status: 400,
+    });
+    return;
+  }
+
+  const { sanitizedInput, sanitizedBudget } = validation;
+  const fallback = generateFallbackCreativeInsights(sanitizedInput, sanitizedBudget);
+
   try {
-    const { input, budget } = req.body;
-
-    if (!input || !budget) {
-      return res.status(400).json({ error: 'Missing input or budget payload' });
-    }
-
     const ai = getGeminiClient();
 
     // If Gemini key is not configured, safely return deterministic fallback
     if (!ai) {
-      const fallback = generateFallbackCreativeInsights(input, budget);
-      return res.json({
+      res.json({
         source: 'deterministic_engine',
         insights: fallback,
         notice: 'AI key not detected in server environment; high-fidelity deterministic plan generated.',
       });
+      return;
     }
 
     const prompt = `You are PlanWise AI, an expert event planner specializing in Indian celebrations and global gatherings.
-Generate creative and practical event concepts for the following event:
-- Title: "${input.title}"
-- Event Type: "${input.eventType}"
-- Date: "${input.date}"
-- City: "${input.city}"
-- Budget: ₹${input.budgetINR.toLocaleString('en-IN')} (Allocated: Catering ₹${budget.categories?.find((c: any) => c.category === 'catering')?.allocatedINR || 'N/A'}, Decor ₹${budget.categories?.find((c: any) => c.category === 'decorations')?.allocatedINR || 'N/A'}, Entertainment ₹${budget.categories?.find((c: any) => c.category === 'entertainment')?.allocatedINR || 'N/A'})
-- Guests: ${input.guestCount}
-- Theme & Vibe: "${input.theme}"
-- Venue Preference: "${input.venuePreference}"
-- Special Requirements: "${input.specialRequirements || 'None'}"
+Generate creative and practical event concepts for the following celebration:
+- Title: "${sanitizedInput!.title}"
+- Event Type: "${sanitizedInput!.eventType}"
+- Date: "${sanitizedInput!.date}"
+- City: "${sanitizedInput!.city}"
+- Budget: ₹${sanitizedInput!.budgetINR.toLocaleString('en-IN')}
+- Guests: ${sanitizedInput!.guestCount}
+- Theme & Vibe: "${sanitizedInput!.theme}"
+- Venue Preference: "${sanitizedInput!.venuePreference}"
+- Special Requirements: "${sanitizedInput!.specialRequirements || 'None'}"
 
 CRITICAL INSTRUCTIONS:
-Return a strictly valid JSON object matching this schema:
-{
-  "tagline": "string",
-  "conceptNarrative": "string (2-3 paragraphs describing the celebration experience)",
-  "curatedMenu": {
-    "welcomeDrinks": ["string", "string", "string"],
-    "appetizers": ["string", "string", "string", "string"],
-    "mains": ["string", "string", "string", "string", "string"],
-    "desserts": ["string", "string", "string"],
-    "culturalNotes": "string (notes on dietary, city flavor, and service style)"
-  },
-  "decorAndAmbience": {
-    "colorPalette": [
-      {"name": "Color Name", "hex": "#HEX"},
-      {"name": "Color Name", "hex": "#HEX"},
-      {"name": "Color Name", "hex": "#HEX"},
-      {"name": "Color Name", "hex": "#HEX"},
-      {"name": "Color Name", "hex": "#HEX"}
-    ],
-    "stylingHighlights": ["string", "string", "string", "string"],
-    "diyCostSavingIdeas": ["string", "string", "string"]
-  },
-  "entertainmentAndActivities": {
-    "highlights": ["string", "string", "string", "string"],
-    "runOfShowTips": ["string", "string"]
-  },
-  "citySpecificAdvice": "string (actionable advice for ${input.city} regarding weather, timing, or local vendor practices)"
-}
+Return a strictly valid JSON object matching the requested schema. Provide inspiring ideas tailored to ${sanitizedInput!.city}.`;
 
-Do not wrap with markdown code blocks. Return plain JSON.`;
+    // Security & Cost Controls:
+    // 1. Strict schema definition via @google/genai Type enum
+    // 2. Token limits (max 2048 tokens)
+    // 3. 20-second timeout guard
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Gemini API call timed out')), 20000)
+    );
 
-    const response = await ai.models.generateContent({
+    const generatePromise = ai.models.generateContent({
       model: 'gemini-3.8-flash',
       contents: prompt,
       config: {
         responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            tagline: { type: Type.STRING },
+            conceptNarrative: { type: Type.STRING },
+            curatedMenu: {
+              type: Type.OBJECT,
+              properties: {
+                welcomeDrinks: { type: Type.ARRAY, items: { type: Type.STRING } },
+                appetizers: { type: Type.ARRAY, items: { type: Type.STRING } },
+                mains: { type: Type.ARRAY, items: { type: Type.STRING } },
+                desserts: { type: Type.ARRAY, items: { type: Type.STRING } },
+                culturalNotes: { type: Type.STRING },
+              },
+              required: ['welcomeDrinks', 'appetizers', 'mains', 'desserts', 'culturalNotes'],
+            },
+            decorAndAmbience: {
+              type: Type.OBJECT,
+              properties: {
+                colorPalette: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      name: { type: Type.STRING },
+                      hex: { type: Type.STRING },
+                    },
+                    required: ['name', 'hex'],
+                  },
+                },
+                stylingHighlights: { type: Type.ARRAY, items: { type: Type.STRING } },
+                diyCostSavingIdeas: { type: Type.ARRAY, items: { type: Type.STRING } },
+              },
+              required: ['colorPalette', 'stylingHighlights', 'diyCostSavingIdeas'],
+            },
+            entertainmentAndActivities: {
+              type: Type.OBJECT,
+              properties: {
+                highlights: { type: Type.ARRAY, items: { type: Type.STRING } },
+                runOfShowTips: { type: Type.ARRAY, items: { type: Type.STRING } },
+              },
+              required: ['highlights', 'runOfShowTips'],
+            },
+            citySpecificAdvice: { type: Type.STRING },
+          },
+          required: [
+            'tagline',
+            'conceptNarrative',
+            'curatedMenu',
+            'decorAndAmbience',
+            'entertainmentAndActivities',
+            'citySpecificAdvice',
+          ],
+        },
+        maxOutputTokens: 2048,
+        temperature: 0.7,
+        topP: 0.9,
       },
     });
 
+    const response = await Promise.race([generatePromise, timeoutPromise]);
     const rawText = response.text || '';
-    let parsedData;
+    let parsedData: unknown;
     try {
       parsedData = JSON.parse(rawText.trim());
     } catch {
-      // Clean possible fences
-      const cleaned = rawText.replace(/```json/g, '').replace(/```/g, '').trim();
+      // Clean possible markdown code fences if present
+      const cleaned = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
       parsedData = JSON.parse(cleaned);
     }
 
+    // Strict schema sanitization: ensures malformed Gemini output never breaks the frontend
+    const validatedInsights = validateAndSanitizeGeminiPlanResponse(parsedData, fallback);
+
     res.json({
       source: 'gemini-3.8-flash',
-      insights: parsedData,
+      insights: validatedInsights,
     });
   } catch (error: any) {
-    console.error('Error generating Gemini plan (safe log):', error?.message || error);
-    // Graceful secure fallback on API error without exposing internal error details
-    const fallback = generateFallbackCreativeInsights(req.body.input || {}, req.body.budget || {});
+    // Log minimal operational info on server; never expose stack traces or keys to client
+    console.error('Error generating Gemini plan (safe log):', error?.status || error?.message || 'Operation error');
     res.json({
       source: 'fallback_after_error',
       insights: fallback,
@@ -208,51 +308,77 @@ Do not wrap with markdown code blocks. Return plain JSON.`;
   }
 });
 
-// POST /api/gemini/chat
-app.post('/api/gemini/chat', async (req, res) => {
+// POST /api/gemini/chat with runtime validation, rate limiting, and output token cap
+app.post('/api/gemini/chat', chatRateLimiter, async (req: Request, res: Response): Promise<void> => {
+  // 1. Strict runtime request validation
+  const validation = validateChatApiRequest(req.body);
+  if (!validation.isValid) {
+    res.status(400).json({
+      error: 'Invalid chat request payload.',
+      details: validation.errors,
+      status: 400,
+    });
+    return;
+  }
+
+  const { sanitizedMessage, sanitizedPlanContext, sanitizedHistory } = validation;
+
   try {
-    const { message, planContext } = req.body;
-    if (!message || typeof message !== 'string' || message.trim().length === 0) {
-      return res.status(400).json({ error: 'A valid text message is required' });
-    }
-
-    // Sanitize input length to prevent denial-of-service / token bloat
-    const sanitizedMessage = message.trim().slice(0, 600);
-
     const ai = getGeminiClient();
 
     if (!ai) {
-      return res.json({
-        reply: `Planning tip for "${sanitizedMessage}": For celebrations in ${planContext?.input?.city || 'your area'}, consider locking in multi-purpose vendors (like a caterer providing linen & tableware) to save 12-15% of your logistics allocation. Feel free to adjust the category sliders in the Budget tab!`,
+      res.json({
+        reply: `Planning tip for "${sanitizedMessage}": For celebrations in ${sanitizedPlanContext?.input?.city || 'your area'}, consider locking in multi-purpose vendors (like a caterer providing linen & tableware) to save 12-15% of your logistics allocation. Feel free to adjust the category sliders in the Budget tab!`,
       });
+      return;
     }
 
     const systemPrompt = `You are PlanWise AI, a helpful, polite, and precise Indian & international event planning consultant.
 User event details:
-- Title: ${String(planContext?.input?.title || 'Event').slice(0, 100)}
-- Type: ${planContext?.input?.eventType}
-- City: ${String(planContext?.input?.city || 'City').slice(0, 50)}
-- Total Budget: ₹${planContext?.input?.budgetINR ? Number(planContext.input.budgetINR).toLocaleString('en-IN') : 'N/A'}
-- Guest Count: ${planContext?.input?.guestCount || 'N/A'}
-- Theme: ${String(planContext?.input?.theme || 'Celebration').slice(0, 100)}
-- Venue: ${planContext?.input?.venuePreference}
+- Title: ${sanitizedPlanContext?.input?.title || 'Event'}
+- Type: ${sanitizedPlanContext?.input?.eventType || 'Celebration'}
+- City: ${sanitizedPlanContext?.input?.city || 'City'}
+- Total Budget: ₹${sanitizedPlanContext?.input?.budgetINR ? Number(sanitizedPlanContext.input.budgetINR).toLocaleString('en-IN') : 'N/A'}
+- Guest Count: ${sanitizedPlanContext?.input?.guestCount || 'N/A'}
+- Theme: ${sanitizedPlanContext?.input?.theme || 'Celebration'}
+- Venue: ${sanitizedPlanContext?.input?.venuePreference || 'Indoor'}
 
 Provide practical, courteous, context-aware advice for the user's inquiry.
 Keep answers concise (under 180 words), structured with bullet points where helpful.
 Never invent non-existent exact quotes. Emphasize realistic planning trade-offs.`;
 
-    const chatContent = `${systemPrompt}\n\nUser Question: ${sanitizedMessage}`;
+    let conversationContext = '';
+    if (sanitizedHistory && sanitizedHistory.length > 0) {
+      // Include up to last 4 messages for conversational context
+      const recent = sanitizedHistory.slice(-4);
+      conversationContext = '\nRecent conversation:\n' +
+        recent.map((m) => `${m.sender === 'user' ? 'User' : 'Assistant'}: ${m.text}`).join('\n');
+    }
 
-    const response = await ai.models.generateContent({
+    const chatContent = `${systemPrompt}${conversationContext}\n\nCurrent Question: ${sanitizedMessage}`;
+
+    // Cost & Security Controls: Cap chat tokens to 512 tokens and add 15s timeout
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Chat API call timed out')), 15000)
+    );
+
+    const generatePromise = ai.models.generateContent({
       model: 'gemini-3.8-flash',
       contents: chatContent,
+      config: {
+        maxOutputTokens: 512,
+        temperature: 0.7,
+        topP: 0.9,
+      },
     });
+
+    const response = await Promise.race([generatePromise, timeoutPromise]);
 
     res.json({
       reply: response.text || 'I have analyzed your event plan. What other details would you like to refine?',
     });
   } catch (error: any) {
-    console.error('Error in chat endpoint (safe log):', error?.message || error);
+    console.error('Error in chat endpoint (safe log):', error?.status || error?.message || 'Operation error');
     res.json({
       reply: `Regarding your query: To optimize your budget and logistics, check the Warnings tab for immediate feasibility advice, and refine vendor quotes in the Vendors tab.`,
     });

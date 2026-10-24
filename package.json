@@ -7,7 +7,8 @@
     "dev": "tsx server.ts",
     "build": "vite build",
     "preview": "vite preview --port 3000 --host 0.0.0.0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@google/genai": "^2.30.0",
@@ -32,5 +33,9 @@
     "typescript": "^5.7.3",
     "vite": "^6.2.0",
     "vitest": "^3.0.7"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=9.0.0"
   }
 }

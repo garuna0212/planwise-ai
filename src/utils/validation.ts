@@ -212,7 +212,7 @@ export function evaluatePlanningConstraints(
         id: 'warn-logistics-large-crowd',
         severity: 'warning',
         category: 'logistics',
-        title: 'Large Gathering (${input.guestCount} Guests) Logistics Crunch',
+        title: `Large Gathering (${input.guestCount} Guests) Logistics Crunch`,
         message: 'Hosting over 300 guests requires dedicated parking marshals, sound permits, waste management, and queue control.',
         actionableTip: 'Increase logistics allocation to at least 10–12% to prevent bottleneck chaos at the entrance.',
       });
